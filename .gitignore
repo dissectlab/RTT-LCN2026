@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+venv/
+.venv/
+env/
+
+# Model artifacts (large, regenerable via export_models.py)
+deployed_models/
+*.pt
+*.joblib
+
+# Logs and run outputs
+*_log.txt
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

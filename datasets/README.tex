@@ -1,0 +1,861 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{textcomp}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{enumitem}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  urlcolor=blue!50!black,
+  pdftitle={Datasets and Feature Extraction},
+}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  framerule=0.4pt,
+  rulecolor=\color{black!40},
+  xleftmargin=10pt,
+  xrightmargin=10pt,
+  aboveskip=8pt,
+  belowskip=8pt,
+}
+
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\setlength{\parskip}{6pt}
+\setlength{\parindent}{0pt}
+
+\title{Datasets and Feature Extraction\\[4pt]
+\large Companion to \emph{``Round Trip Time: A Benign Signal or an Indirect Window into Datacenter Workloads?''}}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+This document accompanies the paper \emph{``Round Trip Time: A Benign Signal or
+an Indirect Window into Datacenter Workloads?''} It contains all RTT
+measurement datasets and the feature-extraction code used to turn raw RTT
+probe traces into the per-window feature CSVs that drive every downstream
+analysis. The contents are self-contained: a fresh user can rebuild every CSV
+in \texttt{features\_allpaths/} from the raw JSON in \texttt{raw\_rtt\_phase*/}
+using the two scripts shipped here (\texttt{extract\_features\_v3\_fixed.py}
+and \texttt{extract\_all.py}).
+
+This document does \textbf{not} describe model training or evaluation --- it
+covers only the data and the feature pipeline.
+
+\tableofcontents
+
+\section{Folder Layout}
+
+\begin{lstlisting}
+datasets/
+|-- README.md, README.tex                   <- this document
+|-- extract_features_v3_fixed.py            <- feature definitions (104 features)
+|-- extract_all.py                          <- driver: walks every phase/path
+|
+|-- raw_rtt_phase1/                         <- per-run RTT JSON
+|-- raw_rtt_phase2/
+|-- raw_rtt_phase3/
+|-- raw_rtt_phase4/
+|-- raw_rtt_phase5/
+|-- raw_rtt_phase6/
+|
+\-- features_allpaths/                      <- per-window feature CSVs
+\end{lstlisting}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{\texttt{raw\_rtt\_phaseN/}} --- one JSON file per run. This
+        is the format the feature extractor reads.
+  \item \textbf{\texttt{features\_allpaths/}} --- output of running
+        \texttt{extract\_all.py}. One CSV per \emph{path symbol} (see
+        \S\ref{sec:paths}), one row per 60\,s window.
+\end{itemize}
+
+\section{Path Symbols and Naming}\label{sec:paths}
+
+Throughout the project, every measurement run is tagged with a short path
+symbol. The convention is:
+\begin{itemize}[leftmargin=*]
+  \item Symbols starting with \textbf{A} are \emph{victim} paths. They are
+        reserved for evaluation only and are never used to fit any
+        preprocessing or training stage.
+  \item Symbols starting with \textbf{B / C / E$'$ / F / P5p} are
+        \emph{profile} paths used as training data.
+\end{itemize}
+
+\begin{longtable}{@{}lllp{8cm}@{}}
+\toprule
+\textbf{Symbol} & \textbf{Phase} & \textbf{Role} & \textbf{Description} \\
+\midrule
+\endhead
+\textbf{A}    & 1 & victim  & Phase-1 victim path (primary cross-path test set) \\
+\textbf{B}    & 1 & profile & Phase-1 profile path \\
+\textbf{A2}   & 2 & victim  & Phase-2 victim path (re-collected, clean as of 2026-04-10) \\
+\textbf{B2}   & 2 & profile & Phase-2 profile path; iperf workloads route through this path (fixes earlier STP re-route) \\
+\textbf{C}    & 3 & profile & Path-C profile (path-diversity training data) \\
+\textbf{E$'$ (Ep)} & 3 & profile & Path-E$'$ profile \\
+\textbf{F}    & 3 & profile & Path-F profile \\
+\textbf{P5p}  & 5 & profile & Phase-5 profile path. Phase-5 victim (P5v) was dropped due to measurement issues and is not used. \\
+\textbf{A4}   & 4 & victim  & Mixed-workload pairs (victim path only) \\
+\textbf{A6v1} & 6 & victim  & Parameter variation, \emph{lighter} parameters ($\approx$2--4$\times$ smaller than baseline) \\
+\textbf{A6v2} & 6 & victim  & Parameter variation, \emph{comparable / heavier} parameters than baseline \\
+\bottomrule
+\end{longtable}
+
+The path symbol shows up in three places: (1)~the phase folder it lives in
+(\texttt{raw\_rtt\_phaseN/}), (2)~the filename pattern (see per-phase tables
+below), and (3)~the \texttt{path} column inside every feature CSV.
+
+\section{Workloads (15 classes)}
+
+Each phase exercises the same 15-workload catalogue, organised in three
+families.
+
+\begin{longtable}{@{}rlll@{}}
+\toprule
+\textbf{\#} & \textbf{Workload} & \textbf{Family} & \textbf{Generator} \\
+\midrule
+\endhead
+1  & \texttt{allreduce}      & distributed   & PyTorch Gloo collective \\
+2  & \texttt{pipeline}       & distributed   & PyTorch Gloo collective \\
+3  & \texttt{shuffle}        & distributed   & PyTorch Gloo collective \\
+4  & \texttt{scatter\_gather}& distributed   & PyTorch Gloo collective \\
+5  & \texttt{federated}      & distributed   & PyTorch Gloo collective \\
+6  & \texttt{checkpoint}     & client-server & TCP \\
+7  & \texttt{preprocess}     & client-server & TCP \\
+8  & \texttt{db\_queries}    & client-server & TCP \\
+9  & \texttt{inference}      & client-server & TCP \\
+10 & \texttt{log\_agg}       & client-server & TCP \\
+11 & \texttt{microservice}   & client-server & TCP \\
+12 & \texttt{dfs\_reads}     & client-server & TCP \\
+13 & \texttt{bulk}           & bandwidth     & iperf3 \\
+14 & \texttt{storage\_rep}   & bandwidth     & iperf3 \\
+15 & \texttt{migration}      & bandwidth     & iperf3 \\
+\bottomrule
+\end{longtable}
+
+Five of these --- \texttt{db\_queries}, \texttt{inference}, \texttt{log\_agg},
+\texttt{microservice}, \texttt{shuffle} --- produce RTT perturbations close to
+measurement noise. They are sometimes merged into a single \emph{light\_traffic}
+class for an alternative 11-class evaluation, but the raw datasets always use
+the full 15-class label set.
+
+\section{Per-Phase Datasets}
+
+\subsection{Phase 1 --- \texttt{raw\_rtt\_phase1/}}
+
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Property} & \textbf{Value} \\
+\midrule
+Paths              & A (victim), B (profile) \\
+Workloads          & 15 \\
+Runs / workload    & 20 \\
+Trace duration     & 300\,s \\
+Total traces       & 600 (15 $\times$ 20 $\times$ 2) \\
+Status             & Clean --- primary dataset \\
+\bottomrule
+\end{tabular}
+
+\textbf{Filename patterns:}
+\begin{lstlisting}
+victim_<workload>_run<N>_rtt.json     <- path A (victim)
+profile_<workload>_run<N>_rtt.json    <- path B (profile)
+\end{lstlisting}
+where \texttt{N} $\in$ 1..20.
+
+\subsection{Phase 2 --- \texttt{raw\_rtt\_phase2/}}
+
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Property} & \textbf{Value} \\
+\midrule
+Paths           & A2 (victim), B2 (profile) \\
+Workloads       & 15 \\
+Runs / workload & 5 \\
+Trace duration  & 600\,s \\
+Status          & Clean (re-collected 2026-04-10) \\
+\bottomrule
+\end{tabular}
+
+\textbf{Filename patterns:}
+\begin{lstlisting}
+victim_<workload>_run<N>_p2_rtt.json
+profile_<workload>_run<N>_p2_rtt.json
+\end{lstlisting}
+where \texttt{N} $\in$ 1..5.
+
+\textit{Note:} Phase 2 was re-collected because the original Phase-2 iperf
+workloads (\texttt{bulk}, \texttt{storage\_rep}, \texttt{migration}) had
+near-zero signal due to an STP re-route that bypassed the link-rate-limited
+spine. In the clean recollection, iperf workloads route through a separate
+profile path. Only the clean recollection is included in this folder.
+
+\subsection{Phase 3 --- \texttt{raw\_rtt\_phase3/}}
+
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Property} & \textbf{Value} \\
+\midrule
+Paths              & C, E$'$ (Ep), F --- all profile-side \\
+Workloads          & 15 \\
+Runs / workload    & 5 each path \\
+Trace duration     & 300\,s \\
+Status             & Clean --- adds path-diversity to the training pool \\
+\bottomrule
+\end{tabular}
+
+\textbf{Filename patterns:}
+\begin{lstlisting}
+pathC_<workload>_run<N>_rtt.json
+pathEp_<workload>_run<N>_rtt.json
+pathF_<workload>_run<N>_rtt.json
+\end{lstlisting}
+where \texttt{N} $\in$ 1..5.
+
+\subsection{Phase 4 --- \texttt{raw\_rtt\_phase4/}}
+
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Property} & \textbf{Value} \\
+\midrule
+Paths           & A4 (victim, mixed-workload pairs) \\
+Pairs           & 8 \\
+Runs / pair     & 5 \\
+Total traces    & 40 \\
+Status          & Test-only (used for OOD analysis) \\
+\bottomrule
+\end{tabular}
+
+Each Phase-4 run runs a \textbf{primary} workload and an \textbf{interferer}
+workload simultaneously on the victim path. The filename encodes both:
+
+\textbf{Filename pattern:}
+\begin{lstlisting}
+victim_<primary>_vs_<interferer>_run<N>_p4_rtt.json
+\end{lstlisting}
+where \texttt{N} $\in$ 1..5.
+
+The 8 pairs combine 7 primary workloads with two interferers (\texttt{bulk}
+and \texttt{checkpoint}). Phase 4 is included for completeness; it is intended
+only as a held-out, mixed-workload stress test.
+
+\subsection{Phase 5 --- \texttt{raw\_rtt\_phase5/}}
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Property} & \textbf{Value} \\
+\midrule
+Paths            & P5p (profile only) \\
+Workloads        & 15 \\
+Runs / workload  & 5 \\
+Trace duration   & 600\,s \\
+Status           & Profile side included in training pool. Phase-5 victim (P5v) dropped due to measurement issues. \\
+\bottomrule
+\end{tabular}
+
+\textbf{Filename pattern:}
+\begin{lstlisting}
+profile_<workload>_run<N>_p5_rtt.json
+\end{lstlisting}
+where \texttt{N} $\in$ 1..5. Although a P5 victim was originally collected,
+it is not used in any analysis and is not included in this folder.
+
+\subsection{Phase 6 --- \texttt{raw\_rtt\_phase6/}}
+
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Property} & \textbf{Value} \\
+\midrule
+Paths                          & A6v1, A6v2 (victim only) \\
+Workloads                      & 15 \\
+Variations                     & 2 (v1 = lighter, v2 = heavier) \\
+Runs / (workload $\times$ variation) & 3 \\
+Trace duration                 & 600\,s \\
+Status                         & Test-only (parameter-generalisation) \\
+\bottomrule
+\end{tabular}
+
+\textbf{Filename pattern:}
+\begin{lstlisting}
+victim_<workload>_v1_run<N>_p6_rtt.json    <- lighter parameters
+victim_<workload>_v2_run<N>_p6_rtt.json    <- heavier parameters
+\end{lstlisting}
+where \texttt{N} $\in$ 1..3.
+
+Phase 6 stresses workloads \textbf{outside} the parameter ranges seen during
+training:
+\begin{itemize}[leftmargin=*]
+  \item \texttt{v1}: each workload's intensity-controlling parameters
+        (e.g.\ number of streams, message size, request rate) are scaled down
+        by $\sim$2--4$\times$.
+  \item \texttt{v2}: each workload's parameters are at least as heavy as the
+        training baseline; some are made noticeably heavier.
+\end{itemize}
+
+The \texttt{preprocess} workload was re-collected on 2026-04-12 after a probe
+packet-loss issue was fixed; the fixed traces are the ones included in
+\texttt{raw\_rtt\_phase6/}.
+
+\section{Raw RTT JSON Format}
+
+Every file in \texttt{raw\_rtt\_phase*/} is a JSON list of probe records, in
+send order:
+
+\begin{lstlisting}
+[
+  {"seq": 0, "send_ts": 1774027367.0588, "rtt_ms": 167.444},
+  {"seq": 1, "send_ts": 1774027367.2263, "rtt_ms": 166.781},
+  {"seq": 2, "send_ts": 1774027367.3930, "rtt_ms": 166.766},
+  ...
+]
+\end{lstlisting}
+
+\begin{tabular}{@{}llp{9cm}@{}}
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Meaning} \\
+\midrule
+\texttt{seq}     & int   & Monotonic probe sequence number assigned by the prober \\
+\texttt{send\_ts}& float & Send timestamp, Unix epoch seconds (sub-millisecond resolution) \\
+\texttt{rtt\_ms} & float & Measured round-trip time in milliseconds \\
+\bottomrule
+\end{tabular}
+
+\textbf{Probing parameters} (identical across phases):
+\begin{itemize}[leftmargin=*]
+  \item UDP echo on port 8888.
+  \item Synchronous, RTT-bounded --- the next probe is sent only after the
+        previous reply arrives, so the effective rate is $\sim$10\,Hz on a
+        100\,ms-RTT path.
+  \item One probe stream per run; the prober runs end-to-end across the
+        entire trace duration.
+\end{itemize}
+
+\textbf{Special values:}
+\begin{itemize}[leftmargin=*]
+  \item \texttt{rtt\_ms = -1} is a \textbf{probe-timeout sentinel}, meaning
+        no reply was received within the prober's timeout. This appears
+        mainly in Phase 6 V1 (\texttt{scatter\_gather} most often). The
+        feature extractor maps these to \texttt{NaN} and filters them out
+        before windowing.
+\end{itemize}
+
+\section{Feature CSV Format (\texttt{features\_allpaths/})}
+
+Running \texttt{extract\_all.py} produces one CSV per path symbol:
+\begin{lstlisting}
+features_allpaths/<PATH>_features_fixed.csv
+\end{lstlisting}
+
+Each row corresponds to a \textbf{single 60\,s window} of a single run. Every
+CSV has \textbf{109 columns}: 104 features followed by 5 metadata columns.
+
+\subsection{Metadata Columns}
+
+These five columns are always the \textbf{last} columns in the CSV:
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Column}   & \textbf{Meaning} \\
+\midrule
+\texttt{label}        & Workload name (one of the 15 strings above) \\
+\texttt{run}          & Run index (1-based, as it appears in the filename) \\
+\texttt{window\_start}& Start time of the window in seconds, relative to the start of that run (0, 10, 20, \ldots) \\
+\texttt{path}         & Path symbol (e.g.\ \texttt{A}, \texttt{B}, \texttt{A6v2}) \\
+\texttt{baseline\_rtt}& Median RTT (in ms) of the \emph{entire run}. Used to normalise the window before feature extraction. \\
+\bottomrule
+\end{tabular}
+
+(\texttt{label}, \texttt{run}, \texttt{path}) uniquely identifies a run;
+(\texttt{label}, \texttt{run}, \texttt{path}, \texttt{window\_start}) uniquely
+identifies a row.
+
+A single companion file is also provided:
+\begin{itemize}[leftmargin=*]
+  \item \texttt{A4int\_features\_fixed.csv} --- same Phase-4 mixed-workload
+        data as \texttt{A4}, but each window is labelled with the
+        \emph{interferer} workload instead of the primary.
+\end{itemize}
+
+\subsection{Approximate Row Counts}
+
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Path} & \textbf{Runs / wl} & \textbf{Trace s} & \textbf{Windows / run} & \textbf{Approx rows} \\
+\midrule
+A    & 20 & 300 & 25 & 7\,500 \\
+B    & 20 & 300 & 25 & 7\,500 \\
+A2   & 5  & 600 & 55 & 4\,125 \\
+B2   & 5  & 600 & 55 & 4\,125 \\
+C    & 5  & 300 & 25 & 1\,875 \\
+Ep   & 5  & 300 & 25 & 1\,875 \\
+F    & 5  & 300 & 25 & 1\,875 \\
+P5p  & 5  & 600 & 55 & 4\,125 \\
+A6v1 & 3  & 600 & 55 & 2\,475 \\
+A6v2 & 3  & 600 & 55 & 2\,475 \\
+\bottomrule
+\end{tabular}
+
+(Windows / run = $(\text{duration} - 60) / 10 + 1$. Actual counts are
+slightly lower because windows with fewer than 20 valid samples are dropped.)
+
+\section{Feature Extraction Pipeline}
+
+The extraction code is a \textbf{two-file} pipeline:
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{File} & \textbf{Role} \\
+\midrule
+\texttt{extract\_features\_v3\_fixed.py} & Defines all 104 features. Pure function: \texttt{extract\_window\_features(normed\_rtt, sample\_rate) -> dict}. \\
+\texttt{extract\_all.py} & Driver. Iterates every path $\times$ workload $\times$ run, slides the window, calls the extractor, writes the CSV. \\
+\bottomrule
+\end{tabular}
+
+All thresholds inside the extractor (run-length, spike/elevation) are
+\textbf{percentile-based} on the window's own distribution. There are no
+hardcoded absolute RTT thresholds, which keeps the feature distribution
+stable across paths with different baseline noise floors.
+
+\subsection{Pipeline (per trace file)}
+
+The driver \texttt{extract\_all.py} does the following for every JSON file:
+
+\begin{lstlisting}
+1. Load the JSON  -> arrays (ts, rtt) of equal length
+2. Normalise:
+       baseline = median(rtt[rtt > 0])              # baseline_rtt column
+       normed   = (rtt - baseline) / baseline       # NaN where rtt <= 0
+3. Drop NaNs (probe-timeout sentinel rtt_ms = -1 maps to NaN)
+4. Estimate sample_rate ~ 1 / median(diff(ts))      # ~10 Hz
+5. Slide a 60s window with 10s stride over the run:
+       for each window: if at least 20 valid samples, call
+                        extract_window_features(window, sample_rate)
+6. Append the 5 metadata fields (label, run, window_start, path, baseline_rtt)
+7. Stack rows, write features_allpaths/<PATH>_features_fixed.csv
+\end{lstlisting}
+
+\textbf{Constants:}
+
+\begin{tabular}{@{}lrl@{}}
+\toprule
+\textbf{Constant}   & \textbf{Value} & \textbf{Where} \\
+\midrule
+\texttt{WINDOW\_SEC}     & 60\,s & window length \\
+\texttt{STRIDE\_SEC}     & 10\,s & window stride \\
+Min valid samples        & 20    & windows below this are skipped \\
+\bottomrule
+\end{tabular}
+
+\subsection{Path / Run Table}
+
+\texttt{extract\_all.py} hardcodes the (path $\rightarrow$ folder, filename
+pattern, run-range) map:
+
+\begin{longtable}{@{}lllr@{}}
+\toprule
+\textbf{Path} & \textbf{Folder} & \textbf{Filename template} & \textbf{Runs} \\
+\midrule
+\endhead
+A    & \texttt{raw\_rtt\_phase1} & \texttt{victim\_\{wl\}\_run\{run\}\_rtt.json}       & 1--20 \\
+B    & \texttt{raw\_rtt\_phase1} & \texttt{profile\_\{wl\}\_run\{run\}\_rtt.json}      & 1--20 \\
+A2   & \texttt{raw\_rtt\_phase2} & \texttt{victim\_\{wl\}\_run\{run\}\_p2\_rtt.json}   & 1--5  \\
+B2   & \texttt{raw\_rtt\_phase2} & \texttt{profile\_\{wl\}\_run\{run\}\_p2\_rtt.json}  & 1--5  \\
+C    & \texttt{raw\_rtt\_phase3} & \texttt{pathC\_\{wl\}\_run\{run\}\_rtt.json}        & 1--5  \\
+Ep   & \texttt{raw\_rtt\_phase3} & \texttt{pathEp\_\{wl\}\_run\{run\}\_rtt.json}       & 1--5  \\
+F    & \texttt{raw\_rtt\_phase3} & \texttt{pathF\_\{wl\}\_run\{run\}\_rtt.json}        & 1--5  \\
+P5p  & \texttt{raw\_rtt\_phase5} & \texttt{profile\_\{wl\}\_run\{run\}\_p5\_rtt.json}  & 1--5  \\
+A6v1 & \texttt{raw\_rtt\_phase6} & \texttt{victim\_\{wl\}\_v1\_run\{run\}\_p6\_rtt.json} & 1--3  \\
+A6v2 & \texttt{raw\_rtt\_phase6} & \texttt{victim\_\{wl\}\_v2\_run\{run\}\_p6\_rtt.json} & 1--3  \\
+\bottomrule
+\end{longtable}
+
+Phase 4 is extracted separately by a dedicated script
+(\texttt{extract\_phase4.py} in the project root), because Phase 4 uses a
+\texttt{<primary>\_vs\_<interferer>} filename schema rather than the
+single-workload schema above.
+
+\subsection{Rebuilding the CSVs}
+
+From the project root (where \texttt{extract\_features\_v3\_fixed.py} and
+\texttt{extract\_all.py} also live as the canonical copies), run:
+
+\begin{lstlisting}[language=bash]
+# rebuild every CSV
+python3 extract_all.py
+
+# rebuild a subset
+python3 extract_all.py A A2 A6v2
+\end{lstlisting}
+
+Output goes to \texttt{features\_allpaths/}. A log of per-workload window
+counts and dropped-NaN counts is written to \texttt{extract\_all\_log.txt}.
+
+\section{Feature Catalogue (104 features)}
+
+All features are computed on the \textbf{normalised} signal
+\[
+x = \frac{\mathrm{rtt} - \mathrm{baseline}}{\mathrm{baseline}}
+\]
+after dropping NaNs. Below, \texttt{valid} denotes the within-window non-NaN
+samples, $n$ their count, $\mathrm{std\_val} = \mathrm{std}(\texttt{valid})$
+and \texttt{sample\_rate} is estimated per run from inter-probe intervals
+($\sim$10\,Hz).
+
+The 104 features are grouped into the six categories used in the paper.
+Counts in the headings sum to 104.
+
+\subsection{Amplitude Structure and Variability of Congestion (20)}
+
+Captures the magnitude, spread and tail behaviour of the
+congestion-induced RTT deviation within the window.
+
+\subsubsection*{Basic shape (7)}
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{cv}             & $\mathrm{std}(\texttt{valid}) / (\mathrm{mean}(|\texttt{valid}|) + 10^{-10})$ --- coefficient of variation \\
+\texttt{iqr}            & 75th $-$ 25th percentile \\
+\texttt{skew}           & Sample skewness (\texttt{scipy.stats.skew}) \\
+\texttt{kurtosis}       & Excess kurtosis (\texttt{scipy.stats.kurtosis}) \\
+\texttt{range}          & $\max - \min$ (\texttt{np.ptp}) \\
+\texttt{p95\_p50\_ratio}& 95th $-$ 50th percentile (despite the name, this is a difference) \\
+\texttt{p99\_p50\_ratio}& 99th $-$ 50th percentile \\
+\bottomrule
+\end{tabular}
+
+\subsubsection*{Spike / elevation (3)}
+
+$\mathrm{spike\_thresh} = \mathrm{percentile}(\texttt{valid}, 90)$;
+$\mathrm{elevated} = \texttt{valid} > \mathrm{spike\_thresh}$.
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{elevated\_frac}  & $\mathrm{mean}(\mathrm{elevated})$ \\
+\texttt{mean\_spike\_amp}& Mean amplitude of elevated samples (0 if none) \\
+\texttt{max\_spike\_amp} & $\max(\texttt{valid})$ \\
+\bottomrule
+\end{tabular}
+
+\subsubsection*{Histogram bins on z-scored signal (5)}
+
+$z = \texttt{valid} / \mathrm{std\_val}$ (or zero if $\mathrm{std\_val} \approx 0$).
+For each bin $[\mathrm{lo}, \mathrm{hi})$ the feature is the fraction of
+samples that fall into it.
+
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Feature} & \textbf{Bin} \\
+\midrule
+\texttt{bin\_near\_zero}    & $[-0.5, 0.5)$ \\
+\texttt{bin\_moderate\_pos} & $[0.5, 2.0)$  \\
+\texttt{bin\_moderate\_neg} & $[-2.0, -0.5)$ \\
+\texttt{bin\_large\_pos}    & $[2.0, 5.0)$  \\
+\texttt{bin\_extreme\_pos}  & $[5.0, \infty)$ \\
+\bottomrule
+\end{tabular}
+
+\subsubsection*{Energy quarters (4)}
+
+Sum-of-squares within each consecutive quarter of the window, normalised by
+total window energy. $e_1, e_2$ are the energies of the first and second
+halves.
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{energy\_q1} & $\sum \texttt{valid}[0:n/4]^2 \,/\, (e_1 + e_2 + 10^{-15})$ \\
+\texttt{energy\_q2} & $\sum \texttt{valid}[n/4:n/2]^2 \,/\, (e_1 + e_2 + 10^{-15})$ \\
+\texttt{energy\_q3} & $\sum \texttt{valid}[n/2:3n/4]^2 \,/\, (e_1 + e_2 + 10^{-15})$ \\
+\texttt{energy\_q4} & $\sum \texttt{valid}[3n/4:n]^2 \,/\, (e_1 + e_2 + 10^{-15})$ \\
+\bottomrule
+\end{tabular}
+
+\subsubsection*{Energy asymmetry (1)}
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{energy\_asymmetry} & $(e_2 - e_1) / (e_1 + e_2 + 10^{-15})$, where $e_1, e_2$ are sum-of-squares of the first and second halves \\
+\bottomrule
+\end{tabular}
+
+\subsection{Temporal Burst and Event Patterns (35)}
+
+Captures discrete congestion events: how often the signal sits above noise,
+how long elevated runs last, how often probes time out, and how rapidly the
+signal changes between consecutive samples.
+
+\subsubsection*{Probe timeout (1)}
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{timeout\_frac} & Fraction of probe slots in the window that were dropped ($1 - n / n_{\text{total}}$). Captures probe-timeout pressure under heavy congestion. \\
+\bottomrule
+\end{tabular}
+
+\subsubsection*{Burst characterisation (7)}
+
+A \emph{burst} is a contiguous run of elevated samples (using the same
+\texttt{elevated} mask as in the amplitude category).
+$\mathrm{WINDOW\_SEC} = 60$.
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{burst\_count}    & Number of bursts \\
+\texttt{mean\_burst\_len}& Mean burst length, in seconds (samples / \texttt{sample\_rate}) \\
+\texttt{std\_burst\_len} & Std of burst length (s) \\
+\texttt{cv\_burst\_len}  & $\mathrm{std} / \mathrm{mean}$ of burst length \\
+\texttt{mean\_ibi}       & Mean inter-burst interval (s); \texttt{WINDOW\_SEC} if fewer than 2 bursts \\
+\texttt{cv\_ibi}         & $\mathrm{std} / \mathrm{mean}$ of inter-burst intervals \\
+\texttt{burst\_rate}     & $\mathrm{burst\_count} / \mathrm{WINDOW\_SEC}$ \\
+\bottomrule
+\end{tabular}
+
+\subsubsection*{Run-length statistics (24)}
+
+Four \textbf{percentile-based} thresholds on $|\texttt{valid}|$:
+
+\begin{tabular}{@{}lrl@{}}
+\toprule
+\textbf{Threshold} & \textbf{Percentile} & \textbf{Rough sigma equivalent} \\
+\midrule
+\texttt{tiny}  & 60 & $\sim$0.5\,$\sigma$ \\
+\texttt{small} & 75 & $\sim$1.0\,$\sigma$ \\
+\texttt{med}   & 90 & $\sim$2.0\,$\sigma$ \\
+\texttt{large} & 97 & $\sim$3.0\,$\sigma$ \\
+\bottomrule
+\end{tabular}
+
+For each threshold $t$, six features are emitted (24 total):
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{rl\_<t>\_max}        & Longest run of $\texttt{valid} > \mathrm{thresh}$ \\
+\texttt{rl\_<t>\_mean}       & Mean run length \\
+\texttt{rl\_<t>\_count}      & Number of runs \\
+\texttt{rl\_<t>\_cv}         & $\mathrm{std} / \mathrm{mean}$ of run lengths (0 if $\le$ 1 run) \\
+\texttt{rl\_<t>\_quiet\_max} & Longest run of $\texttt{valid} \le \mathrm{thresh}$ \\
+\texttt{rl\_<t>\_quiet\_mean}& Mean quiet-run length \\
+\bottomrule
+\end{tabular}
+
+\subsubsection*{First-order temporal dynamics (3)}
+
+Computed on $\mathrm{diffs} = \mathrm{diff}(\texttt{valid})$.
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{mean\_abs\_diff} & $\mathrm{mean}(|\mathrm{diffs}|)$ \\
+\texttt{diff\_skew}      & Skewness of \texttt{diffs} \\
+\texttt{diff\_kurtosis}  & Kurtosis of \texttt{diffs} \\
+\bottomrule
+\end{tabular}
+
+\subsection{Multi-Scale Variability Across Time (23)}
+
+Captures how the variance of the signal changes when it is observed at
+different temporal resolutions, from sub-second chunks up to halves of the
+window.
+
+\subsubsection*{Multi-scale chunk variability (6)}
+
+The window is split into chunks of three sizes; per-chunk means and stds are
+aggregated. For each scale
+$s \in \{\text{fine: 20 chunks},\, \text{mid: 6},\, \text{coarse: 2}\}$:
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{inter\_chunk\_cv\_<s>}      & $\mathrm{std}(\mathrm{chunk\_means}) / (\mathrm{mean}(|\mathrm{chunk\_means}|) + 10^{-10})$ \\
+\texttt{mean\_intra\_chunk\_cv\_<s>}& $\mathrm{mean}(\mathrm{chunk\_stds}) / (\mathrm{std}(\texttt{valid}) + 10^{-10})$ \\
+\bottomrule
+\end{tabular}
+
+$\rightarrow$ $2 \times 3 = \mathbf{6}$ features (\texttt{fine}, \texttt{mid},
+\texttt{coarse}).
+
+\subsubsection*{Variance-ratio scale features (3)}
+
+Variances of fine chunks ($n // 20$) and coarse chunks ($n // 4$):
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{var\_ratio\_fine\_coarse} & $\mathrm{mean}(\mathrm{fine\_vars}) / (\mathrm{mean}(\mathrm{coarse\_vars}) + 10^{-15})$ \\
+\texttt{var\_cv\_fine}            & $\mathrm{std} / \mathrm{mean}$ of fine-chunk variances \\
+\texttt{var\_cv\_coarse}          & $\mathrm{std} / \mathrm{mean}$ of coarse-chunk variances \\
+\bottomrule
+\end{tabular}
+
+\subsubsection*{Wavelet (14)}
+
+A 4-level Haar-style lifting decomposition is applied directly in NumPy
+(no \texttt{pywt} dependency). Total energy of the input is used to
+normalise the energy ratios. For each level $L \in \{1, 2, 3, 4\}$:
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{wavelet\_energy\_d<L>} & Detail-coefficient energy at level $L$, normalised by total energy \\
+\texttt{wavelet\_std\_d<L>}    & Std of detail coefficients at level $L$ \\
+\texttt{wavelet\_max\_d<L>}    & Max absolute detail coefficient at level $L$ \\
+\bottomrule
+\end{tabular}
+
+Plus the residual approximation:
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{wavelet\_energy\_approx} & Energy of the level-4 approximation, normalised \\
+\texttt{wavelet\_std\_approx}    & Std of the level-4 approximation \\
+\bottomrule
+\end{tabular}
+
+$\rightarrow$ $4 \times 3 + 2 = \mathbf{14}$ features.
+
+\subsection{Periodicity and Frequency Structure (19)}
+
+Captures repeating patterns and frequency content of the RTT signal --- both
+via direct autocorrelation at known lags and via the magnitude spectrum.
+
+\subsubsection*{Frequency-domain / FFT (10)}
+
+Computed only when $n \ge 32$. Workflow: detrend $\rightarrow$ Hann window
+$\rightarrow$ real FFT $\rightarrow$ exclude DC bin $\rightarrow$ normalise.
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{spectral\_entropy}     & Shannon entropy of normalised magnitude spectrum, divided by $\log_2(\text{len})$ (so $\in [0, 1]$) \\
+\texttt{dominant\_freq}        & Frequency of the largest bin (Hz) \\
+\texttt{dominant\_freq\_power} & Normalised magnitude of the largest bin \\
+\texttt{top3\_freq\_power}     & Sum of normalised magnitudes of the three largest bins \\
+\texttt{band\_power\_very\_low}& $\sum$ normalised power in 0.001--0.05\,Hz \\
+\texttt{band\_power\_low}      & $\sum$ normalised power in 0.05--0.20\,Hz \\
+\texttt{band\_power\_mid}      & $\sum$ normalised power in 0.20--1.0\,Hz \\
+\texttt{band\_power\_high}     & $\sum$ normalised power in 1.0--3.0\,Hz \\
+\texttt{spectral\_centroid}    & $\sum f \cdot p / \sum p$ \\
+\texttt{spectral\_rolloff}     & Lowest frequency below which 85\,\% of cumulative power lies \\
+\bottomrule
+\end{tabular}
+
+\subsubsection*{Autocorrelation at fixed lags (7)}
+
+For each $\mathrm{lag\_sec} \in \{0.5, 1, 2, 5, 10, 20, 30\}$ (in seconds),
+with $\mathrm{lag} = \mathrm{round}(\mathrm{lag\_sec} \times \mathrm{sample\_rate})$:
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{ac\_lag\_<lag\_sec>s} & $\mathrm{corrcoef}(\texttt{valid}[:-\mathrm{lag}], \texttt{valid}[\mathrm{lag}:])$ (0 if non-finite or $\mathrm{lag} \ge n - 1$) \\
+\bottomrule
+\end{tabular}
+
+$\rightarrow$ $\mathbf{7}$ features.
+
+\subsubsection*{Autocorrelation decay (2)}
+
+The autocorrelation is computed at lags $1..\min(n/2, 50)$.
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{ac\_decay\_rate} & $\mathrm{ac}[0] - \mathrm{ac}[4]$ (drop in correlation over 5 lags) \\
+\texttt{ac\_half\_life}  & First lag (in seconds) where $\mathrm{ac} < 0.5 \cdot \mathrm{ac}[0]$; if never, the maximum lag computed (in seconds) \\
+\bottomrule
+\end{tabular}
+
+\subsection{Long-Range Dependence and Persistence (2)}
+
+Captures whether the signal has memory across long time scales --- i.e.\
+whether deviations decay quickly or persist throughout the window.
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{hurst}        & Hurst exponent via R/S analysis over up to 7 dyadic scales (returns 0.5 on too-short windows) \\
+\texttt{trend\_slope} & Slope of a linear fit $\texttt{valid} \sim t/n$, divided by $\mathrm{std\_val} + 10^{-15}$ \\
+\bottomrule
+\end{tabular}
+
+\subsection{Temporal Complexity in Low-Intensity Signals (5)}
+
+Captures the \emph{unpredictability} of the signal. These features remain
+informative when the workload produces only small RTT deviations: low-amplitude
+signals can still differ in how regular or random their fluctuations are.
+
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Definition} \\
+\midrule
+\texttt{approx\_entropy}  & Approximate entropy ($m = 2$, $r = 0.2 \times \mathrm{std}$); window capped at 300 samples for cost \\
+\texttt{sample\_entropy}  & Sample entropy ($m = 2$, $r = 0.2 \times \mathrm{std}$); same 300-sample cap \\
+\texttt{perm\_entropy\_d1}& Permutation entropy, order = 3, delay = 1, normalised by $\log_2(3!)$ \\
+\texttt{perm\_entropy\_d2}& \ldots delay = 2 \\
+\texttt{perm\_entropy\_d5}& \ldots delay = 5 \\
+\bottomrule
+\end{tabular}
+
+\subsection{Total}
+
+\begin{longtable}{@{}p{6cm}p{7cm}r@{}}
+\toprule
+\textbf{Category} & \textbf{Sub-group} & \textbf{Count} \\
+\midrule
+\endhead
+Amplitude structure and variability of congestion & basic shape (7) + spike/elevation (3) + z-scored hist bins (5) + energy quarters (4) + energy asymmetry (1) & \textbf{20} \\
+Temporal burst and event patterns                  & timeout (1) + burst (7) + run-length (24) + first-order diffs (3) & \textbf{35} \\
+Multi-scale variability across time                & multi-scale chunk (6) + variance-ratio scale (3) + wavelet (14) & \textbf{23} \\
+Periodicity and frequency structure                & FFT (10) + AC at fixed lags (7) + AC decay (2) & \textbf{19} \\
+Long-range dependence and persistence              & Hurst (1) + trend slope (1) & \textbf{2} \\
+Temporal complexity in low-intensity signals       & approx / sample / permutation entropy (5) & \textbf{5} \\
+\midrule
+\textbf{Total} &  & \textbf{104} \\
+\bottomrule
+\end{longtable}
+
+Plus 5 metadata columns (\texttt{label}, \texttt{run}, \texttt{window\_start},
+\texttt{path}, \texttt{baseline\_rtt}) $\rightarrow$ \textbf{109 columns} in
+every \texttt{\_features\_fixed.csv}.
+
+\end{document}

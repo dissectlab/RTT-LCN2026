@@ -1,0 +1,12 @@
+# Core scientific stack
+numpy>=1.23
+pandas>=1.5
+scipy>=1.9
+
+# Machine learning
+scikit-learn>=1.2
+lightgbm>=3.3
+joblib>=1.2
+
+# Deep sequence models (LSTM / Window Transformer). CPU works; CUDA optional.
+torch>=2.0
